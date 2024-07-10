@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 
 /*
@@ -59,7 +60,7 @@ using System.Security.Cryptography;
 namespace Cart;
 
 /// <summary>
-/// 
+/// Represents the cart-pole environment,
 /// </summary>
 internal class CartPoleEnv
 {
@@ -72,7 +73,7 @@ internal class CartPoleEnv
     private const float c_forceMag = 10.0f;
     private const float c_xThreshold = 2.4f;
 
-    // # seconds between state updates
+    // # seconds between state updates (50fps)
     private const float c_tau = 0.02f;
 
     // size of the screen
@@ -105,6 +106,13 @@ internal class CartPoleEnv
     /// </summary>
     internal int TotalRewards { get; private set; } = 0;
 
+    // to track the max / in of the parameters the cart controls
+
+    float mincartX = float.MaxValue, maxcartX = float.MinValue;
+    float maxPoleAngle = float.MinValue, minPoleAngle = float.MaxValue;
+    float maxPoleVelocity = float.MinValue, minPoleVelocity = float.MaxValue;
+    float maxCartVelocity = float.MinValue, minCartVelocity = float.MaxValue;
+
     /// <summary>
     /// Constructor.
     /// </summary>
@@ -119,6 +127,7 @@ internal class CartPoleEnv
         // # Angle at which to fail the episode
         thetaThresholdInRadians = (float)(12 * 2 * Math.PI / 360);
         TotalRewards = 0;
+
         // # Angle limit set to 2 * theta_threshold_radians so failing observation
         // # is still within bounds.
 
@@ -134,9 +143,9 @@ internal class CartPoleEnv
     /// <param name="action">0 = left, 1 = right</param>
     /// <returns>reward (1=alive, 0=terminated)</returns>
     /// <exception cref="ArgumentOutOfRangeException"></exception>
-    internal int Step(int action)
+    internal Bitmap? Step(int action)
     {
-        if (Terminated) return 0;
+        if (Terminated) return null;
 
         // |Num  | Action                 |
         // |-----| -----------------------|
@@ -206,28 +215,41 @@ internal class CartPoleEnv
             (theta > thetaThresholdInRadians) ||
             TotalRewards > 499; // we'll increment => 500
 
-        Render();
-
-        ++TotalRewards;
 
         // Since the goal is to keep the pole upright for as long as possible, a reward of +1 for every step taken,
         // including the termination step, is allotted. The threshold for rewards is 475 for v1.
-        return 1;
+        ++TotalRewards; // we add before render, as render shows state of play, and should include reward
+
+        Bitmap? videoDisplay = Render();
+
+        return videoDisplay;
     }
 
     /// <summary>
     /// Returns float between +/-0.05
     /// </summary>
     /// <returns></returns>
-    private static float GetRandomValuePlusMinus0point05()
+    internal static float GetRandomValuePlusMinus0point05()
     {
-        return ((float)RandomNumberGenerator.GetInt32(-5000, 5000)) / 100000f;
+        byte[] randomBytes = new byte[8];
+
+        using (RandomNumberGenerator rng = RandomNumberGenerator.Create())
+        {
+            rng.GetBytes(randomBytes);
+        }
+
+        ulong randomInt = BitConverter.ToUInt64(randomBytes, 0);
+
+        // large int between  0 and Uint64.MaxValue turned into a float 0..1 , then scaled to -0.05..0.05
+        float result = ((float)randomInt / (float)UInt64.MaxValue) * 0.1f - 0.05f;
+
+        return result;
     }
 
     /// <summary>
     /// Resets the environment.
     /// </summary>
-    internal void Reset()
+    internal Bitmap? Reset()
     {
         // All observations are assigned a uniformly random value in `(-0.05, 0.05)`
         State = new StateObject()
@@ -235,21 +257,27 @@ internal class CartPoleEnv
             CartPosition = GetRandomValuePlusMinus0point05(),
             CartVelocity = GetRandomValuePlusMinus0point05(),
             PoleAngle = GetRandomValuePlusMinus0point05(),
-            PoleAngularVelocity = GetRandomValuePlusMinus0point05()
+            PoleAngularVelocity =  GetRandomValuePlusMinus0point05()
         };
+
+        if (State.InitIsOutOfBounds())
+        {
+            throw new InvalidOperationException("Initial state is out of bounds");
+        }
 
         TotalRewards = 0;
         Terminated = false;
 
-        Render();
+        return Render();
     }
 
     /// <summary>
     /// Renders the cart and pole.
     /// </summary>
-    private void Render()
+    private Bitmap? Render()
     {
         Bitmap surf = new(c_screenWidth, c_screenHeight);
+
         using Graphics g = Graphics.FromImage(surf);
 
         float world_width = c_xThreshold * 2;
@@ -258,11 +286,10 @@ internal class CartPoleEnv
         float polelen = scale * (2 * c_length);
         float cartwidth = 50.0f;
         float cartheight = 30.0f;
-        float l, r, t, b;
 
         if (State is null)
         {
-            return;
+            return null;
         }
 
         /*
@@ -281,23 +308,132 @@ internal class CartPoleEnv
          
         */
         g.Clear(Color.White);
+        g.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.HighQuality;
+        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.HighQuality;
+        
+        // dotted vertical line
+        using Pen penVerticalCentreLine = new(Color.FromArgb(255, 200, 200, 200));
+        penVerticalCentreLine.DashStyle = System.Drawing.Drawing2D.DashStyle.Dash;
+        g.DrawLine(penVerticalCentreLine, c_screenWidth / 2.0f, 0, c_screenWidth / 2.0f, c_screenHeight);
 
-        //-------------------------------
+        DrawCart(g, scale, polewidth, polelen, cartwidth, cartheight, out float l, out float r, out float t, out float b, out float axleoffset, out float cartx, out float carty);
 
-        // draw cart       
+        // horizontal line through the cart, drawn before the pole
+        g.DrawLine(Pens.Black, 0, c_screenHeight - carty, c_screenWidth, c_screenHeight - carty);
+
+        DrawPole(g, l, r, t, b, axleoffset, cartx, carty);
+        DrawAxle(g, polewidth, axleoffset, cartx, carty);
+
+        int action = AI.GetCorrectDirection(State);
+        WriteTelemetry(g, cartx);
+
+        // show the direction the cart steering request is for.
+        DrawArrowShowingDirectionOfAction(action, g, cartx, carty);
+        DrawLineShowingMinMaxCartMovement(g, carty);
+
+        // update the screen
+        _screen.Image = surf;
+        return surf;
+    }
+
+    /// <summary>
+    /// Writes the score / angle / speed etc to the image.
+    /// </summary>
+    /// <param name="g"></param>
+    /// <param name="cartx"></param>
+    private void WriteTelemetry(Graphics g, float cartx)
+    {
+        Debug.Assert(State != null, "State != null");
+        // write total score
+        using Font font = new("Courier New", 10);
+
+        MinMax(ref minPoleVelocity, ref maxPoleVelocity, State.PoleAngularVelocity);
+        MinMax(ref mincartX, ref maxcartX, cartx);
+        MinMax(ref minPoleAngle, ref maxPoleAngle, State.PoleAngle);
+        MinMax(ref minCartVelocity, ref maxCartVelocity, State.CartVelocity);
+
+        g.DrawString(TotalRewards == 0 ? "initial state" : $"Rewards: {TotalRewards}", font, Brushes.Black, 10, 5);
+        g.DrawString($"Cart velocity: {NumberWithPlusMinus4Dp(State.CartVelocity)}  min: {NumberWithPlusMinus4Dp(minCartVelocity)}  max: {NumberWithPlusMinus4Dp(maxCartVelocity)}", font, Brushes.Black, 10, 20);
+        g.DrawString($"Pole angle:    {NumberWithPlusMinus4Dp(State.PoleAngle)}  min: {NumberWithPlusMinus4Dp(minPoleAngle)}  max: {NumberWithPlusMinus4Dp(maxPoleAngle)}", font, Brushes.Black, 10, 35);
+        g.DrawString($"Pole velocity: {NumberWithPlusMinus4Dp(State.PoleAngularVelocity)}  min: {NumberWithPlusMinus4Dp(minPoleVelocity)}  max: {NumberWithPlusMinus4Dp(maxPoleVelocity)}", font, Brushes.Black, 10, 50);
+        g.DrawString($"Last action calc: {NumberWithPlusMinus4Dp(AI.GetCalc(State))}", font, Brushes.Black, 380, 5); // what the "AI" is thinking
+    }
+
+    /// <summary>
+    /// Output the number to 4 decimal places, with a + or - sign.
+    /// </summary>
+    /// <param name="number"></param>
+    /// <returns></returns>
+    private static string NumberWithPlusMinus4Dp(float number)
+    {
+        return number.ToString("+#0.0000;-#0.0000");
+    }
+
+    /// <summary>
+    /// Draws the circular axle between cart and pole.
+    /// </summary>
+    /// <param name="g"></param>
+    /// <param name="polewidth"></param>
+    /// <param name="axleoffset"></param>
+    /// <param name="cartx"></param>
+    /// <param name="carty"></param>
+    private static void DrawAxle(Graphics g, float polewidth, float axleoffset, float cartx, float carty)
+    {
+        // draw axle circle
+
+        using SolidBrush circleBrush = new(Color.FromArgb(129, 132, 203));
+
+        g.FillEllipse(circleBrush, cartx - polewidth / 2, c_screenHeight - (carty + axleoffset + polewidth / 2), polewidth, polewidth);
+    }
+
+    /// <summary>
+    /// Draws the cart.
+    /// </summary>
+    /// <param name="g"></param>
+    /// <param name="scale"></param>
+    /// <param name="polewidth"></param>
+    /// <param name="polelen"></param>
+    /// <param name="cartwidth"></param>
+    /// <param name="cartheight"></param>
+    /// <param name="l"></param>
+    /// <param name="r"></param>
+    /// <param name="t"></param>
+    /// <param name="b"></param>
+    /// <param name="axleoffset"></param>
+    /// <param name="cartx"></param>
+    /// <param name="carty"></param>
+    private void DrawCart(Graphics g, float scale, float polewidth, float polelen, float cartwidth, float cartheight, out float l, out float r, out float t, out float b, out float axleoffset, out float cartx, out float carty)
+    {
+        Debug.Assert(State != null, "State != null");
+        
+        // draw cart
         (l, r, t, b) = (-cartwidth / 2, cartwidth / 2, cartheight / 2, -cartheight / 2);
 
-        float axleoffset = cartheight / 4.0f;
-        float cartx = State.CartPosition * scale + c_screenWidth / 2.0f; //  # MIDDLE OF CART
-        float carty = 100;  //# TOP OF CART
+        axleoffset = cartheight / 4.0f;
+        cartx = State.CartPosition * scale + c_screenWidth / 2.0f;
+        carty = 100;
         PointF[] cart_coords = [new PointF(l + cartx, c_screenHeight - (b + carty)), new PointF(l + cartx, c_screenHeight - (t + carty)), new PointF(r + cartx, c_screenHeight - (t + carty)), new PointF(r + cartx, c_screenHeight - (b + carty))];
 
         g.FillPolygon(Brushes.Black, cart_coords);
 
         (l, r, t, b) = (-polewidth / 2, polewidth / 2, (polelen - polewidth / 2), (-polewidth / 2));
+    }
 
-        //-------------------------------
-
+    /// <summary>
+    /// Draw the pole rotated to reflect the amount it is leaning.
+    /// </summary>
+    /// <param name="g"></param>
+    /// <param name="l"></param>
+    /// <param name="r"></param>
+    /// <param name="t"></param>
+    /// <param name="b"></param>
+    /// <param name="axleoffset"></param>
+    /// <param name="cartx"></param>
+    /// <param name="carty"></param>
+    private void DrawPole(Graphics g, float l, float r, float t, float b, float axleoffset, float cartx, float carty)
+    {
+        Debug.Assert(State != null, "State != null");
         // draw pole
 
         PointF[] pole_coords = [new PointF(l, b), new PointF(l, t), new PointF(r, t), new PointF(r, b)];
@@ -315,24 +451,81 @@ internal class CartPoleEnv
             pole_coords[i] = new PointF(vx + cartx, c_screenHeight - (vy + carty + axleoffset));
         }
 
-        g.DrawLine(Pens.Black, 0, c_screenHeight - carty, c_screenWidth, c_screenHeight - carty);
-
         using SolidBrush brush = new(Color.FromArgb(202, 152, 101));
         g.FillPolygon(brush, pole_coords);
+    }
 
-        // draw axle circle
+    /// <summary>
+    /// Draws a dotted line under the cart indicating how much the car has moved left or right.
+    /// </summary>
+    /// <param name="g"></param>
+    /// <param name="carty"></param>
+    private void DrawLineShowingMinMaxCartMovement(Graphics g, float carty)
+    {
+        using Pen pen = new(Color.FromArgb(255, 0, 0, 0));
 
-        using SolidBrush circleBrush = new(Color.FromArgb(129, 132, 203));
+        pen.StartCap = System.Drawing.Drawing2D.LineCap.DiamondAnchor;
+        pen.EndCap = System.Drawing.Drawing2D.LineCap.DiamondAnchor;
+        pen.DashStyle = System.Drawing.Drawing2D.DashStyle.Dot;
 
-        g.FillEllipse(circleBrush, cartx - polewidth / 2, c_screenHeight - (carty + axleoffset + polewidth / 2), polewidth, polewidth);
+        g.DrawLine(pen, mincartX, c_screenHeight - (carty - 18), maxcartX, c_screenHeight - (carty - 18));
+    }
 
-        // write total score
-        using Font font = new("Arial", 10);
+    /// <summary>
+    /// Underneath the cart, we draw an arrow to show the direction the cart is being steered.
+    /// </summary>
+    /// <param name="action"></param>
+    /// <param name="g"></param>
+    /// <param name="cartx"></param>
+    /// <param name="carty"></param>
+    private static void DrawArrowShowingDirectionOfAction(int action, Graphics g, float cartx, float carty)
+    {
+        PointF[] arrowpoints;
 
-        g.DrawString("Score: " + TotalRewards.ToString(), font, Brushes.Black, 10, 10);
+        float arrowy = carty - 10;
+        int direction = action == 0 ? -1 : 1;
 
-        // update the screen
-        _screen.Image?.Dispose();
-        _screen.Image = surf;
+
+        //      |             |
+        //      +------|------+
+        //             ^ (cartx, c_screenHeight - (cartHeight/2 + carty))
+
+        //         /|
+        //        / '-+     <- draw these
+        //        \ .-+  
+        //         \|
+
+        // arrow
+        arrowpoints = [
+                    new PointF(cartx, c_screenHeight - (arrowy-20)),
+                        new PointF(cartx+direction*10, c_screenHeight - (arrowy-20)),
+                        new PointF(cartx+direction*10, c_screenHeight - (arrowy-10)),
+                        new PointF(cartx+direction*20, c_screenHeight - (arrowy-25)),
+                        new PointF(cartx+direction*10, c_screenHeight - (arrowy-40)),
+                        new PointF(cartx+direction*10, c_screenHeight - (arrowy-30)),
+                        new PointF(cartx, c_screenHeight - (arrowy-30)),
+                        new PointF(cartx, c_screenHeight - (arrowy-20))
+                    ];
+
+        g.FillPolygon(Brushes.Black, arrowpoints);
+    }
+
+    /// <summary>
+    /// Sets min/max values.
+    /// </summary>
+    /// <param name="min"></param>
+    /// <param name="max"></param>
+    /// <param name="value"></param>
+    static void MinMax(ref float min, ref float max, float value)
+    {
+        if (value < min)
+        {
+            min = value;
+        }
+
+        if (value > max)
+        {
+            max = value;
+        }
     }
 }
