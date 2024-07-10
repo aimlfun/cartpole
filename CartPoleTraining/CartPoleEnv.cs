@@ -1,3 +1,5 @@
+//#define withoutAngularVelocity // don't undefine this. It does not work without angular velocity.
+using System.Diagnostics;
 using System.Security.Cryptography;
 
 /*
@@ -74,6 +76,8 @@ internal class CartPoleEnv
 
     // # seconds between state updates
     private const float c_tau = 0.02f;
+    internal float wins = 0;
+    internal float losses = 0;
 
 #if drawingImage
     // size of the screen
@@ -82,7 +86,7 @@ internal class CartPoleEnv
 #endif
 
     private const string c_kinematics_integrator = "euler";
-    
+
     private readonly float _totalMass;
     private readonly float _poleMassLength;
     private readonly float thetaThresholdInRadians;
@@ -115,7 +119,12 @@ internal class CartPoleEnv
     /// <summary>
     /// Contains the "score" we attribute to the AI's perfomance (based on how well it kept the cart stable, and for how long).
     /// </summary>
-    internal int Score { get; private set; } = 0;
+    internal float Score { get; private set; } = 0;
+
+    /// <summary>
+    /// 
+    /// </summary>
+    internal float Age { get; set; } = 0;
 
     /// <summary>
     /// Constructor.
@@ -129,8 +138,9 @@ internal class CartPoleEnv
         _poleMassLength = c_massPole * c_length;
 
         // # Angle at which to fail the episode
-        thetaThresholdInRadians = (float)(12 * 2 * Math.PI / 360);        
+        thetaThresholdInRadians = (float)(12 * 2 * Math.PI / 360);
         TotalRewards = 0;
+
         // # Angle limit set to 2 * theta_threshold_radians so failing observation
         // # is still within bounds.
 
@@ -138,13 +148,19 @@ internal class CartPoleEnv
         ResetEnvironment();
     }
 
-
     /// <summary>
     /// Assign a neural network to the cart that is the size configured in the AI settings.
     /// </summary>
     internal void AddNewBrain()
     {
+#if withoutAngularVelocity
+        Brain = new NeuralNetwork(Id, [2/* inputs */, 1 /* left or right */]);
+#else
         Brain = new NeuralNetwork(Id, [4/* inputs */, 1 /* left or right */]);
+#endif
+        wins = 0;
+        losses = 0;
+        Age = 0;
     }
 
     /// <summary>
@@ -154,6 +170,7 @@ internal class CartPoleEnv
     {
         int steps = 0;
         float totVelocity = 0;
+        float totPoleAngle = 0;
 
         while (!Terminated)
         {
@@ -165,10 +182,24 @@ internal class CartPoleEnv
             // We intentionally ignore sign of the velocity (I guess that makes it a speed, as it has no direction?.
             steps++;
             totVelocity += Math.Abs(State.CartVelocity);
+            totPoleAngle += Math.Abs(State.PoleAngle);
         }
 
-        // points for steps, minus points for excessive velocity
-        Score = (int)(steps * 1000 - (int)100f * totVelocity / steps);
+        ++Age;
+
+        // points for steps, minus points for excessive velocity, and severely whacked for losing.
+        if (steps > 500)
+        {
+            ++wins;
+            Score = (steps * 100f - 10f * totVelocity / (float)steps) - losses * 99999999f + wins * 100000f + -5 * (totPoleAngle / (float)steps) + Age;
+            if (losses > 0) losses -= 0.001f;
+        }
+        else
+        {
+            ++losses;
+            Score = (steps * 1000f - 100f * totVelocity / (float)steps);
+            Age = 0;
+        }
     }
 
     /// <summary>
@@ -176,9 +207,13 @@ internal class CartPoleEnv
     /// </summary>
     /// <returns></returns>
     private int GetActionFromAI()
-    {     
+    {
+        // We divide by 4 to ensure they are within -1..1 range.
+#if withoutAngularVelocity
+        double[] inputs = [State.CartVelocity / 4, State.PoleAngle / 4];
+#else
         double[] inputs = [State.CartPosition, State.CartVelocity / 4, State.PoleAngle / 4, State.PoleAngularVelocity / 4];
-
+#endif
         double[] outputFromNeuralNetwork = Brain.FeedForward(inputs); // process inputs
 
         // it's a left or right, 0 = left
@@ -189,6 +224,7 @@ internal class CartPoleEnv
 
         return 1;
     }
+
 
     /// <summary>
     /// Moves the cart left or right. You are not allowed to refuse to move it.
@@ -263,7 +299,7 @@ internal class CartPoleEnv
             (x < -c_xThreshold) ||
             (x > c_xThreshold) ||
             (theta < -thetaThresholdInRadians) ||
-            (theta > thetaThresholdInRadians) || 
+            (theta > thetaThresholdInRadians) ||
             TotalRewards > 499; // we'll increment => 500
 
         ++TotalRewards;
@@ -279,7 +315,21 @@ internal class CartPoleEnv
     /// <returns></returns>
     private static float GetRandomValuePlusMinus0point05()
     {
-        return ((float)RandomNumberGenerator.GetInt32(-5000, 5000)) / 100000f;
+        byte[] randomBytes = new byte[4];
+        using (RandomNumberGenerator rng = RandomNumberGenerator.Create())
+        {
+            rng.GetBytes(randomBytes);
+        }
+
+        int randomInt = BitConverter.ToInt32(randomBytes, 0) & Int32.MaxValue;
+        float result = ((float)randomInt / Int32.MaxValue) * 0.1f - 0.05f;
+
+        if (result < -0.0500f || result > 0.0500f)
+        {
+            Debugger.Break();
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -299,5 +349,4 @@ internal class CartPoleEnv
         TotalRewards = 0;
         Terminated = false;
     }
-  
 }

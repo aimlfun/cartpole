@@ -23,7 +23,7 @@ internal static class CartPoleLearning
     /// <summary>
     /// We use this to determine when to call out a better score.
     /// </summary>
-    private static int s_lastScore = -int.MaxValue;
+    private static float s_lastScore = -float.MaxValue;
 
     /// <summary>
     /// The "id" of the best performing cart.
@@ -84,7 +84,10 @@ internal static class CartPoleLearning
             // replace the worst with the best
             NeuralNetwork.CopyFromTo(arrayOfCarts[neuralNetworkToCloneFromIndex].Brain, arrayOfCarts[worstNeuralNetworkIndex].Brain);
 
-            arrayOfCarts[worstNeuralNetworkIndex].Brain.Mutate(25, 0.5F); // mutate
+            arrayOfCarts[worstNeuralNetworkIndex].Brain.Mutate(25, 0.25F); // mutate
+            arrayOfCarts[worstNeuralNetworkIndex].Age = 0; // reset the environment, ready for next game
+            // dilemma, this could be as good as the one we clone, or even better. If we tamper
+            // with the "wins" and "losses" it could skew everything.
         }
 
         // throw in one random ones, just to keep things interesting. It could be a random one performs better than the best.
@@ -150,14 +153,27 @@ internal static class CartPoleLearning
             MutateCartAIs();
 
             // output some stats to the console. We do it only when the score improves - to keep the console from getting too cluttered, and to keep the performance up.
-            if (s_bestAICartIndex > -1 && s_lastScore != s_cartPole[s_bestAICartIndex].Score)
+            if (s_bestAICartIndex > -1 && s_lastScore <= s_cartPole[s_bestAICartIndex].Score)
             {
                 s_lastScore = s_cartPole[s_bestAICartIndex].Score;
 
-                Console.WriteLine($"Epoch: {s_numberOfGenerations} | Score: {s_cartPole[s_bestAICartIndex].Score} (higher is better) | Rewards: {s_cartPole[s_bestAICartIndex].TotalRewards}");
+                Console.WriteLine($"Epoch: {s_numberOfGenerations} | Score: {s_cartPole[s_bestAICartIndex].Score} (higher is better) | Rewards: {s_cartPole[s_bestAICartIndex].TotalRewards} | WIN: {s_cartPole[s_bestAICartIndex].wins} | LOSE: {s_cartPole[s_bestAICartIndex].losses:F2} | AGE: {s_cartPole[s_bestAICartIndex].Age}");
                 Console.WriteLine("C# code for cart's brain:");
                 Console.WriteLine(s_cartPole[s_bestAICartIndex].Brain.Formula());
                 Console.WriteLine("");
+
+                if (s_numberOfGenerations % 100 == 0)
+                {
+                    // output all carts that have the same score as the best performing cart
+                    foreach (CartPoleEnv cart in s_cartPole.Values)
+                    {
+                        if (cart.Score == s_lastScore) // float used, because scores became large, maybe change to Int64?
+                        {
+                            Console.WriteLine($"Cart {cart.Id} has the same score as the best performing cart. Age {cart.Age}");
+                            Console.WriteLine(cart.Brain.Formula());
+                        }
+                    }
+                }
             }
 
             ResetAllCarts();

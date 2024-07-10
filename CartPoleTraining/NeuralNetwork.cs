@@ -1,7 +1,27 @@
-﻿using System.Security.Cryptography;
+﻿// I discovered by a silly mistake that a winning formula does not need floating point weights / biases.
+// (My mistake was that the random function I created was returning numbers that were >1.)
+
+// When defined, the random weights will exceed 1. Because hardTan treats >1 as 1, and <-1 as -1, weights in excess are sort of redundant if the network is input connected to output
+// as nothing can scale them. It equates to sum( i[0] x weight0 + i[1] x weight1 + i[2] x weight2 + i[3] x weight3 + bias) = output. If weights exceed 1, then the bias is semi-redundant.
+// After running it over 9,000 games the simple formula, shows it doesn't care about cart position (0x), and the bias is zero. Even more funny is the 1x multiplier.
+
+//      Epoch: 9423 | Score: 942359550(higher is better) | Rewards: 501 | WIN: 9423 | LOSE: 0.00 | AGE: 9423
+//      direction = (Activate((0 * input[0]) + (1 * input[1]) + (1 * input[2]) + (1 * input[3]) + 0))
+//
+// And that means:
+//      int direction = (State.CartVelocity + State.PoleAngle + State.PoleAngularVelocity ) / 4 < 0 ? 0 : 1 // direction 0 = left, 1 = right.
+// But divide everything by 4 has no impact on +/-, so...
+//      int direction = State.CartVelocity + State.PoleAngle + State.PoleAngularVelocity < 0 ? 0 : 1 // direction 0 = left, 1 = right.
+//
+// PROVE ME WRONG. :)
+
+#define brillianceByDumbMistake
+
+using System.Security.Cryptography;
 using System.Text;
 
 namespace Cart;
+
 /// <summary>
 /// Implementation of a feedforward neural network.
 /// </summary>
@@ -47,7 +67,7 @@ public class NeuralNetwork
 #pragma warning restore CS8618
     {
         // (1) INPUT (2) HIDDEN (3) OUTPUT. Less than 3 would be INPUT->OUTPUT; hardly "AI" but actually works
-        if (layerDefinition.Length < 2) throw new ArgumentException("layer definition must be >2", nameof(layerDefinition));
+        if (layerDefinition.Length < 2) throw new ArgumentException("layer definition must be >1", nameof(layerDefinition));
 
         Id = _id; // used to reference this network
 
@@ -98,7 +118,7 @@ public class NeuralNetwork
     /// <returns></returns>
     private static float RandomFloatBetweenMinusHalfToPlusHalf()
     {
-        return (float)(RandomNumberGenerator.GetInt32(0, 1000) - 500) / 1000;
+        return (float)(RandomNumberGenerator.GetInt32(-5000000, 5000000))/10000000f;
     }
 
     /// <summary>
@@ -115,7 +135,11 @@ public class NeuralNetwork
 
             for (int biasLayer = 0; biasLayer < Layers[layer]; biasLayer++)
             {
+#if brillianceByDumbMistake
                 bias[biasLayer] = 0;
+#else
+                bias[biasLayer] = RandomFloatBetweenMinusHalfToPlusHalf() / 10f;
+#endif
             }
 
             biasList.Add(bias);
@@ -143,7 +167,11 @@ public class NeuralNetwork
 
                 for (int neuronIndexInPreviousLayer = 0; neuronIndexInPreviousLayer < neuronsInPreviousLayer; neuronIndexInPreviousLayer++)
                 {
-                    neuronWeights[neuronIndexInPreviousLayer] = RandomFloatBetweenMinusHalfToPlusHalf();
+#if brillianceByDumbMistake
+                    neuronWeights[neuronIndexInPreviousLayer] = (int) (RandomFloatBetweenMinusHalfToPlusHalf()*10);
+#else
+                    neuronWeights[neuronIndexInPreviousLayer] = (int) RandomFloatBetweenMinusHalfToPlusHalf();
+#endif
                 }
 
                 layerWeightsList.Add(neuronWeights);
@@ -212,6 +240,16 @@ public class NeuralNetwork
     }
 
     /// <summary>
+    /// Provides a random mutation value (i.e. what is added to weights and biaseses).
+    /// </summary>
+    /// <param name="val"></param>
+    /// <returns></returns>
+    private static float RandomMutationValue(float val)
+    {
+        return RandomFloatBetweenMinusHalfToPlusHalf()/10*val;
+    }
+
+    /// <summary>
     /// A simple mutation function for any genetic implementations, ensuring it DOES mutate.
     /// </summary>
     /// <param name="pctChance"></param>
@@ -229,7 +267,7 @@ public class NeuralNetwork
                     if (RandomNumberGenerator.GetInt32(0, 100) <= pctChance)
                     {
                         mutated = true;
-                        Biases[layerIndex][neuronIndex] += (float)RandomNumberGenerator.GetInt32((int)(-val * 10000), (int)(val * 10000)) / 20000;
+                        Biases[layerIndex][neuronIndex] += RandomMutationValue(val);
                     }
                 }
             }
@@ -243,7 +281,7 @@ public class NeuralNetwork
                         if (RandomNumberGenerator.GetInt32(0, 100) <= pctChance)
                         {
                             mutated = true;
-                            Weights[layerIndex][neuronIndexForLayer][neuronIndexInPreviousLayer] += (float)RandomNumberGenerator.GetInt32((int)(-val * 10000), (int)(val * 10000)) / 20000;
+                            Weights[layerIndex][neuronIndexForLayer][neuronIndexInPreviousLayer] += RandomMutationValue(val); 
                         }
                     }
                 }
